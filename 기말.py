@@ -1,218 +1,618 @@
 import os
 import random
+import sqlite3
+from datetime import datetime
 import tkinter as tk
+from tkinter import messagebox, simpledialog
 
 
-class HangmanV2:
+class SoloHangmanGame:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("HANGMAN v0.2 - 단어장 & 정답 입력창 추가")
-        self.root.geometry("560x640")
+        self.root.title("HANGMAN ARCADE - 1인용 랭킹 에디션")
+        self.root.geometry("560x680")
         self.root.resizable(False, False)
-        self.root.configure(bg="#0F172A")
 
-        # [2단계 추가] 외부 파일(words.txt)에서 단어장 불러오기
+        # 모던 네온 다크 테마 색상표
+        self.colors = {
+            "bg": "#0F172A",
+            "card": "#1E293B",
+            "btn_bg": "#334155",
+            "btn_fg": "#F8FAFC",
+            "neon_blue": "#38BDF8",
+            "neon_yellow": "#FACC15",
+            "neon_green": "#10B981",
+            "neon_red": "#F43F5E",
+            "muted": "#94A3B8",
+        }
+        self.root.configure(bg=self.colors["bg"])
+
+        # 1. 외부 단어장(words.txt) 불러오기 & SQLite3 데이터베이스 초기화
         self.word_file = "words.txt"
         self.word_pool = self.load_words()
 
+        self.db_name = "hangman_ranking.db"
+        self.init_db()
+
+        # 2. 게임 상태 변수
+        self.player_nickname = "PLAYER"
         self.secret_word = ""
         self.guessed_letters = set()
         self.wrong_count = 0
         self.max_attempts = 6
         self.score = 0
         self.combo = 0
-        self.is_game_over = False
-        self.letter_buttons = {}
+        self.is_game_over = True
 
-        # 상단 점수 및 콤보 전광판
-        board = tk.Frame(root, bg="#1E293B", padx=15, pady=10)
-        board.pack(fill="x", padx=20, pady=(15, 5))
+        # 3. UI 위젯 참조 변수
+        self.letter_buttons = {}
+        self.answer_entry = None
+        self.submit_ans_btn = None
+        self.add_word_btn = None
+
+        # 4. 전역 키보드 및 마우스 클릭 이벤트 연결
+        self.root.bind("<Key>", self.handle_keypress)
+        self.root.bind("<Button-1>", self.handle_global_click)
+
+        # 첫 화면(메인 로비) 표시
+        self.show_menu_screen()
+
+    # =========================================================================
+    # 1. 외부 텍스트 파일(words.txt) 단어장 관리
+    # =========================================================================
+    def load_words(self):
+        """words.txt 파일에서 영단어 목록을 읽어옵니다. 파일이 없으면 기본 단어로 생성합니다."""
+        default_words = [
+            "PYTHON", "KEYBOARD", "ALGORITHM", "UNIVERSE", "CHAMPION",
+            "STRATEGY", "ADVENTURE", "DATABASE", "COMPILER", "SPECTRUM",
+            "FUNCTION", "VARIABLE", "NETWORK", "SOFTWARE", "TERMINAL",
+        ]
+
+        if not os.path.exists(self.word_file):
+            with open(self.word_file, "w", encoding="utf-8") as f:
+                f.write("\n".join(default_words))
+            return default_words
+
+        loaded_words = []
+        with open(self.word_file, "r", encoding="utf-8") as f:
+            for line in f:
+                word = line.strip().upper()
+                if word.isalpha() and len(word) >= 2:
+                    loaded_words.append(word)
+
+        return loaded_words if loaded_words else default_words
+
+    def add_new_word_popup(self):
+        """팝업창으로 새 영단어를 입력받아 words.txt 맨 아랫줄에 추가합니다."""
+        new_word = simpledialog.askstring(
+            "단어 추가", "단어장에 추가할 영단어를 입력하세요 (알파벳 2글자 이상):"
+        )
+        if not new_word:
+            return
+
+        clean_word = new_word.strip().upper()
+        if not clean_word.isalpha() or len(clean_word) < 2:
+            messagebox.showwarning("입력 오류", "2글자 이상의 순수 영단어만 추가할 수 있습니다.")
+            return
+
+        if clean_word in self.word_pool:
+            messagebox.showinfo("중복 안내", f"'{clean_word}'는 이미 단어장에 등록되어 있습니다!")
+            return
+
+        self.word_pool.append(clean_word)
+        with open(self.word_file, "a", encoding="utf-8") as f:
+            f.write(f"\n{clean_word}")
+
+        if self.add_word_btn:
+            self.add_word_btn.config(text=f"➕ 새 단어 추가하기 (현재 {len(self.word_pool)}단어)")
+
+        messagebox.showinfo(
+            "추가 완료", f"'{clean_word}' 단어가 추가되었습니다!\n(총 {len(self.word_pool)}개 단어 보유)"
+        )
+
+    # =========================================================================
+    # 2. SQLite3 데이터베이스 관리 (랭킹 저장 및 조회)
+    # =========================================================================
+    def init_db(self):
+        """랭킹 데이터를 저장할 SQLite3 테이블을 생성합니다."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS rankings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nickname TEXT NOT NULL,
+                    score INTEGER NOT NULL,
+                    played_at TEXT NOT NULL
+                )
+            """)
+
+    def save_ranking(self, nickname, score):
+        """0점보다 높은 점수를 얻었을 때 DB에 닉네임과 점수를 기록합니다."""
+        if score <= 0:
+            return
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                "INSERT INTO rankings (nickname, score, played_at) VALUES (?, ?, ?)",
+                (nickname, score, now_str),
+            )
+
+    def get_top_rankings(self, limit=5):
+        """점수가 높은 순으로 상위 N명의 랭킹 목록을 가져옵니다."""
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.execute(
+                "SELECT nickname, score, played_at FROM rankings ORDER BY score DESC, id ASC LIMIT ?",
+                (limit,),
+            )
+            return cursor.fetchall()
+
+    def get_best_score(self):
+        """역대 1위 점수를 반환합니다."""
+        top = self.get_top_rankings(limit=1)
+        return top[0][1] if top else 0
+
+    # =========================================================================
+    # 3. 공통 화면 제어 및 입력창 포커스 관리
+    # =========================================================================
+    def clear_screen(self):
+        """화면 전환을 위해 현재 창의 모든 위젯을 비웁니다."""
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        self.letter_buttons.clear()
+        self.answer_entry = None
+        self.submit_ans_btn = None
+        self.add_word_btn = None
+
+    def handle_global_click(self, event):
+        """정답 입력창 바깥 영역을 클릭하면 입력창 포커스를 해제합니다."""
+        if not isinstance(event.widget, tk.Entry):
+            self.root.focus_set()
+
+    def release_entry_focus(self, event=None):
+        """Esc 또는 [취소] 버튼 클릭 시 입력창을 비우고 빠져나옵니다."""
+        if self.answer_entry:
+            self.answer_entry.delete(0, tk.END)
+        self.root.focus_set()
+
+    # =========================================================================
+    # 4. [화면 1] 메인 로비 (닉네임 입력 · 게임 시작 · 랭킹 · 단어 추가)
+    # =========================================================================
+    def show_menu_screen(self):
+        self.clear_screen()
+        self.is_game_over = True
+
+        tk.Label(
+            self.root,
+            text="HANGMAN",
+            font=("Consolas", 42, "bold"),
+            bg=self.colors["bg"],
+            fg=self.colors["neon_blue"],
+        ).pack(pady=(55, 5))
+
+        tk.Label(
+            self.root,
+            text="SOLO ARCADE & RANKING EDITION",
+            font=("Consolas", 12, "bold"),
+            bg=self.colors["bg"],
+            fg=self.colors["muted"],
+        ).pack(pady=(0, 30))
+
+        # 메인 시작 카드
+        card = tk.Frame(self.root, bg=self.colors["card"], padx=25, pady=24)
+        card.pack(fill="x", padx=55)
+
+        tk.Label(
+            card,
+            text="👤 도전자 닉네임 (최대 12자):",
+            font=("맑은 고딕", 10, "bold"),
+            bg=self.colors["card"],
+            fg=self.colors["neon_yellow"],
+        ).pack(anchor="w", pady=(0, 6))
+
+        nick_entry = tk.Entry(
+            card,
+            font=("맑은 고딕", 12, "bold"),
+            bg=self.colors["btn_bg"],
+            fg="white",
+            insertbackground="white",
+            relief="flat",
+        )
+        nick_entry.pack(fill="x", ipady=5, pady=(0, 18))
+        nick_entry.insert(0, self.player_nickname)
+        nick_entry.focus_set()
+
+        def on_start():
+            nick = nick_entry.get().strip()
+            if not nick:
+                messagebox.showwarning("입력 확인", "랭킹에 등록할 닉네임을 입력해 주세요!")
+                nick_entry.focus_set()
+                return
+            if len(nick) > 12:
+                messagebox.showwarning("입력 확인", "닉네임은 12자 이내로 입력해 주세요!")
+                return
+            self.player_nickname = nick
+            self.start_game_screen()
+
+        tk.Button(
+            card,
+            text="🕹️ 게임 시작하기",
+            font=("맑은 고딕", 13, "bold"),
+            bg=self.colors["neon_blue"],
+            fg="#0F172A",
+            activebackground="#7DD3FC",
+            relief="flat",
+            pady=10,
+            cursor="hand2",
+            command=on_start,
+        ).pack(fill="x")
+
+        nick_entry.bind("<Return>", lambda e: on_start())
+
+        # 명예의 전당 랭킹 버튼
+        tk.Button(
+            self.root,
+            text=f"🏆 명예의 전당 TOP 5 보기 (현재 1위: {self.get_best_score():,}점)",
+            font=("맑은 고딕", 11, "bold"),
+            bg=self.colors["btn_bg"],
+            fg=self.colors["neon_yellow"],
+            activebackground="#475569",
+            relief="flat",
+            width=36,
+            pady=10,
+            cursor="hand2",
+            command=self.show_ranking_screen,
+        ).pack(pady=(22, 10))
+
+        # 단어장 추가 버튼
+        self.add_word_btn = tk.Button(
+            self.root,
+            text=f"➕ 새 단어 추가하기 (현재 {len(self.word_pool)}단어)",
+            font=("맑은 고딕", 10, "bold"),
+            bg=self.colors["card"],
+            fg=self.colors["neon_green"],
+            activebackground="#334155",
+            relief="flat",
+            width=36,
+            pady=8,
+            cursor="hand2",
+            command=self.add_new_word_popup,
+        )
+        self.add_word_btn.pack(pady=4)
+
+    # =========================================================================
+    # 5. [화면 2] 1인용 게임 플레이 화면
+    # =========================================================================
+    def start_game_screen(self):
+        self.clear_screen()
+        self.score = 0
+        self.combo = 0
+
+        # 상단 내비게이션 바
+        nav_bar = tk.Frame(self.root, bg=self.colors["bg"])
+        nav_bar.pack(fill="x", padx=20, pady=(12, 5))
+
+        tk.Button(
+            nav_bar,
+            text="🏠 메인 메뉴",
+            font=("맑은 고딕", 9, "bold"),
+            bg=self.colors["card"],
+            fg="white",
+            relief="flat",
+            padx=10,
+            pady=3,
+            cursor="hand2",
+            command=self.exit_to_menu,
+        ).pack(side=tk.LEFT)
+
+        tk.Label(
+            nav_bar,
+            text=f"PLAYER: {self.player_nickname}",
+            font=("맑은 고딕", 10, "bold"),
+            bg=self.colors["bg"],
+            fg=self.colors["neon_blue"],
+        ).pack(side=tk.RIGHT)
+
+        # 점수 / 콤보 / 최고기록 전광판
+        board = tk.Frame(self.root, bg=self.colors["card"], padx=15, pady=10)
+        board.pack(fill="x", padx=20, pady=5)
+
         self.score_label = tk.Label(
-            board, text="SCORE: 0", font=("Consolas", 12, "bold"), bg="#1E293B", fg="#10B981"
+            board, text="SCORE: 0", font=("Consolas", 12, "bold"),
+            bg=self.colors["card"], fg=self.colors["neon_green"]
         )
         self.score_label.pack(side=tk.LEFT)
-        self.combo_label = tk.Label(
-            board, text="0 COMBO", font=("Consolas", 12, "bold"), bg="#1E293B", fg="#FACC15"
-        )
-        self.combo_label.pack(side=tk.RIGHT)
 
-        self.info_label = tk.Label(
-            root, text="", font=("맑은 고딕", 11, "bold"), bg="#0F172A", fg="white"
+        self.combo_label = tk.Label(
+            board, text="0 COMBO", font=("Consolas", 12, "bold"),
+            bg=self.colors["card"], fg=self.colors["neon_yellow"]
         )
-        self.info_label.pack(pady=8)
+        self.combo_label.pack(side=tk.LEFT, padx=35)
+
+        self.best_label = tk.Label(
+            board, text=f"TOP 1: {self.get_best_score()}", font=("Consolas", 12, "bold"),
+            bg=self.colors["card"], fg=self.colors["neon_blue"]
+        )
+        self.best_label.pack(side=tk.RIGHT)
+
+        # 안내 메시지 및 행맨 캔버스
+        self.info_label = tk.Label(
+            self.root, text="", font=("맑은 고딕", 11, "bold"),
+            bg=self.colors["bg"], fg="white"
+        )
+        self.info_label.pack(pady=(8, 4))
 
         self.canvas = tk.Canvas(
-            root, width=250, height=185, bg="#1E293B", highlightthickness=0
+            self.root, width=250, height=185,
+            bg=self.colors["card"], highlightthickness=0
         )
-        self.canvas.pack(pady=5)
+        self.canvas.pack(pady=6)
 
+        # 단어 빈칸 라벨
         self.word_label = tk.Label(
-            root, text="", font=("Consolas", 26, "bold"), bg="#0F172A", fg="white"
+            self.root, text="", font=("Consolas", 26, "bold"),
+            bg=self.colors["bg"], fg="white"
         )
-        self.word_label.pack(pady=6)
+        self.word_label.pack(pady=4)
 
-        # [2단계 추가] 정답 직접 입력창 및 자유 탈출(Esc/취소/외부클릭) 구현
-        direct_frame = tk.Frame(root, bg="#1E293B", padx=10, pady=6)
+        # 정답 직접 입력창 영역 (자유 탈출 지원)
+        direct_frame = tk.Frame(self.root, bg=self.colors["card"], padx=10, pady=6)
         direct_frame.pack(pady=(2, 8))
+
         tk.Label(
             direct_frame, text="✍️ 정답 입력:", font=("맑은 고딕", 9, "bold"),
-            bg="#1E293B", fg="#FACC15"
+            bg=self.colors["card"], fg=self.colors["neon_yellow"]
         ).pack(side=tk.LEFT, padx=(0, 6))
 
         self.answer_entry = tk.Entry(
             direct_frame, width=15, font=("Consolas", 12, "bold"),
-            bg="#334155", fg="white", insertbackground="white", relief="flat"
+            bg=self.colors["btn_bg"], fg="white", insertbackground="white", relief="flat"
         )
         self.answer_entry.pack(side=tk.LEFT, padx=(0, 6), ipady=2)
         self.answer_entry.bind("<Return>", lambda e: self.submit_full_word())
         self.answer_entry.bind("<Escape>", self.release_entry_focus)
 
-        self.submit_btn = tk.Button(
+        self.submit_ans_btn = tk.Button(
             direct_frame, text="제출", font=("맑은 고딕", 9, "bold"),
-            bg="#10B981", fg="#0F172A", relief="flat", padx=8, pady=2,
-            command=self.submit_full_word
+            bg=self.colors["neon_green"], fg="#0F172A", relief="flat",
+            padx=8, pady=2, cursor="hand2", command=self.submit_full_word
         )
-        self.submit_btn.pack(side=tk.LEFT, padx=(0, 4))
+        self.submit_ans_btn.pack(side=tk.LEFT, padx=(0, 4))
 
         tk.Button(
             direct_frame, text="취소(Esc)", font=("맑은 고딕", 8),
-            bg="#334155", fg="#94A3B8", relief="flat", padx=6, pady=2,
-            command=self.release_entry_focus
+            bg=self.colors["btn_bg"], fg=self.colors["muted"], relief="flat",
+            padx=6, pady=2, cursor="hand2", command=self.release_entry_focus
         ).pack(side=tk.LEFT)
 
-        # 알파벳 버튼 키보드
-        kb_frame = tk.Frame(root, bg="#0F172A")
-        kb_frame.pack(pady=6)
-        for idx, ch in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+        # 알파벳 A~Z 버튼 키보드
+        keyboard_frame = tk.Frame(self.root, bg=self.colors["bg"])
+        keyboard_frame.pack(pady=6)
+
+        for idx, letter in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
             btn = tk.Button(
-                kb_frame, text=ch, width=4, font=("Consolas", 11, "bold"),
-                bg="#334155", fg="white", relief="flat",
-                command=lambda c=ch: self.on_letter_click(c),
+                keyboard_frame, text=letter, width=4, height=1,
+                font=("Consolas", 11, "bold"),
+                bg=self.colors["btn_bg"], fg=self.colors["btn_fg"],
+                activebackground=self.colors["neon_blue"], activeforeground="#0F172A",
+                disabledforeground="#475569", relief="flat", cursor="hand2",
+                command=lambda ch=letter: self.on_letter_click(ch),
             )
             btn.grid(row=idx // 9, column=idx % 9, padx=3, pady=3)
-            self.letter_buttons[ch] = btn
+            self.letter_buttons[letter] = btn
 
-        self.next_btn = tk.Button(
-            root, text="▶ 다음 스테이지", font=("맑은 고딕", 10, "bold"),
-            bg="#38BDF8", fg="#0F172A", relief="flat", width=24, pady=6,
-            command=self.start_round,
+        # 하단 진행 버튼
+        self.action_btn = tk.Button(
+            self.root, text="▶ 다음 스테이지", font=("맑은 고딕", 10, "bold"),
+            bg=self.colors["neon_blue"], fg="#0F172A", relief="flat",
+            width=28, pady=6, cursor="hand2", command=self.next_round
         )
-        self.next_btn.pack(pady=10)
+        self.action_btn.pack(pady=10)
 
-        self.root.bind("<Key>", self.handle_keypress)
-        self.root.bind("<Button-1>", self.handle_global_click)
-        self.start_round()
+        self.next_round()
 
-    def load_words(self):
-        default_words = ["PYTHON", "KEYBOARD", "ALGORITHM", "DATABASE", "NETWORK"]
-        if not os.path.exists(self.word_file):
-            with open(self.word_file, "w", encoding="utf-8") as f:
-                f.write("\n".join(default_words))
-            return default_words
-        with open(self.word_file, "r", encoding="utf-8") as f:
-            words = [line.strip().upper() for line in f if line.strip().isalpha()]
-        return words if words else default_words
+    def exit_to_menu(self):
+        """플레이 도중 메인 메뉴로 나갈 때 누적 점수를 저장할지 확인합니다."""
+        if self.score > 0 and not self.is_game_over:
+            if messagebox.askyesno("기록 저장", f"현재까지 얻은 {self.score}점을 랭킹에 저장할까요?"):
+                self.save_ranking(self.player_nickname, self.score)
+        self.show_menu_screen()
 
-    def handle_global_click(self, event):
-        if not isinstance(event.widget, tk.Entry):
-            self.root.focus_set()
-
-    def release_entry_focus(self, event=None):
-        self.answer_entry.delete(0, tk.END)
-        self.root.focus_set()
-
-    def start_round(self):
+    def next_round(self):
+        """단어장에서 무작위 단어를 뽑아 새 라운드를 시작합니다."""
         self.secret_word = random.choice(self.word_pool)
         self.guessed_letters.clear()
         self.wrong_count = 0
         self.is_game_over = False
 
-        self.info_label.config(text=f"단어를 추리하세요! (총 {len(self.secret_word)}글자)", fg="white")
+        self.info_label.config(
+            text=f"숨겨진 영단어를 추리하세요! (총 {len(self.secret_word)}글자 | 남은 기회: 6번)",
+            fg="white",
+        )
         self.word_label.config(fg="white")
         self.draw_gallows()
         self.update_word_display()
-        self.set_inputs("normal")
+        self.set_inputs_state("normal")
         self.root.focus_set()
 
-    def on_letter_click(self, ch):
+    # =========================================================================
+    # 6. 정답 판정 및 점수 계산 로직
+    # =========================================================================
+    def on_letter_click(self, letter):
         self.root.focus_set()
-        self.guess_letter(ch)
+        self.guess_letter(letter)
+
+    def handle_keypress(self, event):
+        if isinstance(event.widget, tk.Entry) or self.is_game_over:
+            return
+        pressed = event.char.upper()
+        if pressed in self.letter_buttons and pressed not in self.guessed_letters:
+            self.guess_letter(pressed)
 
     def guess_letter(self, letter):
-        if self.is_game_over:
-            return
-        self.letter_buttons[letter].config(state="disabled", bg="#1E293B")
+        """알파벳 1글자 입력 시 정답 여부를 판정합니다."""
+        self.letter_buttons[letter].config(state="disabled", bg=self.colors["card"])
         self.guessed_letters.add(letter)
 
         if letter in self.secret_word:
             self.update_word_display()
             self.combo += 1
             self.score += 100 * self.combo
-            self.update_scoreboard()
+            self.score_label.config(text=f"SCORE: {self.score}")
+            self.combo_label.config(
+                text=f"{self.combo} COMBO 🔥" if self.combo >= 2 else f"{self.combo} COMBO"
+            )
+
             if set(self.secret_word).issubset(self.guessed_letters):
-                self.finish_round(True, "🎉 스테이지 클리어!")
+                bonus = (self.max_attempts - self.wrong_count) * 50
+                self.score += bonus
+                self.score_label.config(text=f"SCORE: {self.score}")
+                self.finish_round(is_win=True, msg=f"🎉 스테이지 클리어! 남은 기회 보너스 +{bonus}점!")
         else:
-            self.apply_wrong(f"'{letter}' 없음!")
+            self.apply_wrong_penalty(f"'{letter}' 없음!")
 
     def submit_full_word(self):
-        if self.is_game_over:
+        """입력창에 적은 전체 단어의 정답 여부를 판정합니다."""
+        if self.is_game_over or not self.answer_entry:
             return
+
         typed = self.answer_entry.get().strip().upper()
         self.release_entry_focus()
         if not typed:
             return
-        if typed == self.secret_word:
-            self.score += 500
-            self.update_scoreboard()
-            self.finish_round(True, "🎯 한 번에 정답 적중! (+500점)")
-        else:
-            self.apply_wrong(f"'{typed}' 오답!")
 
-    def apply_wrong(self, msg):
+        if typed == self.secret_word:
+            unrevealed = len(set(self.secret_word) - self.guessed_letters)
+            early_bonus = (unrevealed * 150) + ((self.max_attempts - self.wrong_count) * 50)
+            self.score += 300 + early_bonus
+            self.score_label.config(text=f"SCORE: {self.score}")
+            self.finish_round(is_win=True, msg=f"🎯 한 번에 정답 적중! 보너스 +{early_bonus}점!")
+        else:
+            self.apply_wrong_penalty(f"'{typed}' 오답!")
+
+    def apply_wrong_penalty(self, reason):
+        """오답 시 콤보 초기화 및 행맨 1획 추가를 처리합니다."""
         self.wrong_count += 1
         self.combo = 0
-        self.update_scoreboard()
+        self.combo_label.config(text="0 COMBO")
         self.draw_hangman_part(self.wrong_count)
-        rem = self.max_attempts - self.wrong_count
-        self.info_label.config(text=f"❌ {msg} 남은 기회: {rem}번", fg="#F43F5E")
+
+        remaining = self.max_attempts - self.wrong_count
+        self.info_label.config(text=f"❌ {reason} 남은 기회: {remaining}번", fg=self.colors["neon_red"])
+
         if self.wrong_count >= self.max_attempts:
-            self.finish_round(False, f"💀 게임 오버! 정답: {self.secret_word}")
+            self.finish_round(is_win=False, msg="💀 GAME OVER! 도전 실패!")
 
     def finish_round(self, is_win, msg):
+        """라운드 종료 시 승리(다음 스테이지) 또는 패배(DB 랭킹 저장)를 처리합니다."""
         self.is_game_over = True
-        self.set_inputs("disabled")
-        color = "#10B981" if is_win else "#F43F5E"
-        self.word_label.config(text=" ".join(self.secret_word), fg=color)
-        self.info_label.config(text=msg, fg=color)
-        if not is_win:
+        self.set_inputs_state("disabled")
+
+        if is_win:
+            self.word_label.config(text=" ".join(self.secret_word), fg=self.colors["neon_green"])
+            self.info_label.config(text=msg, fg=self.colors["neon_green"])
+            self.action_btn.config(
+                text="▶ 다음 스테이지 (점수 이어하기)",
+                bg=self.colors["neon_green"],
+                command=self.next_round,
+            )
+        else:
+            final_score = self.score
+            self.save_ranking(self.player_nickname, final_score)
+            self.best_label.config(text=f"TOP 1: {self.get_best_score()}")
+
+            self.word_label.config(text=" ".join(self.secret_word), fg=self.colors["neon_red"])
+            self.info_label.config(
+                text=f"{msg} (정답: {self.secret_word} | 최종 {final_score}점)",
+                fg=self.colors["neon_red"],
+            )
+            self.action_btn.config(
+                text="🏆 랭킹 보드에서 내 순위 확인하기",
+                bg=self.colors["neon_yellow"],
+                command=lambda: self.show_ranking_screen(self.player_nickname, final_score),
+            )
             self.score = 0
             self.combo = 0
-            self.update_scoreboard()
-
-    def update_scoreboard(self):
-        self.score_label.config(text=f"SCORE: {self.score}")
-        self.combo_label.config(text=f"{self.combo} COMBO")
-
-    def set_inputs(self, state):
-        bg = "#334155" if state == "normal" else "#1E293B"
-        for btn in self.letter_buttons.values():
-            btn.config(state=state, bg=bg)
-        self.answer_entry.config(state=state)
-        self.submit_btn.config(state=state)
-
-    def handle_keypress(self, event):
-        if isinstance(event.widget, tk.Entry) or self.is_game_over:
-            return
-        ch = event.char.upper()
-        if ch in self.letter_buttons and ch not in self.guessed_letters:
-            self.guess_letter(ch)
 
     def update_word_display(self):
         self.word_label.config(
-            text=" ".join(c if c in self.guessed_letters else "_" for c in self.secret_word)
+            text=" ".join(ch if ch in self.guessed_letters else "_" for ch in self.secret_word)
         )
 
+    def set_inputs_state(self, state):
+        bg_color = self.colors["btn_bg"] if state == "normal" else self.colors["card"]
+        for btn in self.letter_buttons.values():
+            btn.config(state=state, bg=bg_color)
+        if self.answer_entry:
+            self.answer_entry.config(state=state)
+        if self.submit_ans_btn:
+            self.submit_ans_btn.config(state=state)
+
+    # =========================================================================
+    # 7. [화면 3] 명예의 전당 TOP 5 랭킹 보드
+    # =========================================================================
+    def show_ranking_screen(self, highlight_nick=None, highlight_score=None):
+        self.clear_screen()
+        self.is_game_over = True
+
+        nav_bar = tk.Frame(self.root, bg=self.colors["bg"])
+        nav_bar.pack(fill="x", padx=20, pady=(15, 5))
+
+        tk.Button(
+            nav_bar, text="🏠 메인 메뉴", font=("맑은 고딕", 9, "bold"),
+            bg=self.colors["card"], fg="white", relief="flat",
+            padx=10, pady=4, cursor="hand2", command=self.show_menu_screen
+        ).pack(side=tk.LEFT)
+
+        tk.Label(
+            self.root, text="🏆 HALL OF FAME (TOP 5)", font=("Consolas", 22, "bold"),
+            bg=self.colors["bg"], fg=self.colors["neon_yellow"]
+        ).pack(pady=(15, 5))
+
+        tk.Label(
+            self.root, text="SQLite3 데이터베이스에 저장된 역대 최고 점수 순위입니다.",
+            font=("맑은 고딕", 10), bg=self.colors["bg"], fg=self.colors["muted"]
+        ).pack(pady=(0, 20))
+
+        board = tk.Frame(self.root, bg=self.colors["card"], padx=20, pady=20)
+        board.pack(fill="x", padx=40)
+
+        header = tk.Frame(board, bg=self.colors["btn_bg"], pady=8)
+        header.pack(fill="x", pady=(0, 8))
+        tk.Label(header, text="순위", width=6, font=("맑은 고딕", 10, "bold"), bg=self.colors["btn_bg"], fg=self.colors["neon_blue"]).pack(side=tk.LEFT)
+        tk.Label(header, text="닉네임", width=14, anchor="w", font=("맑은 고딕", 10, "bold"), bg=self.colors["btn_bg"], fg="white").pack(side=tk.LEFT, padx=5)
+        tk.Label(header, text="점수", width=10, anchor="e", font=("맑은 고딕", 10, "bold"), bg=self.colors["btn_bg"], fg=self.colors["neon_green"]).pack(side=tk.LEFT)
+        tk.Label(header, text="달성 일시", width=16, anchor="e", font=("맑은 고딕", 10, "bold"), bg=self.colors["btn_bg"], fg=self.colors["muted"]).pack(side=tk.RIGHT, padx=8)
+
+        rankings = self.get_top_rankings(limit=5)
+        medals = ["🥇 1위", "🥈 2위", "🥉 3위", "  4위", "  5위"]
+
+        if not rankings:
+            tk.Label(
+                board, text="아직 등록된 기록이 없습니다.\n첫 번째 주인공이 되어보세요!",
+                font=("맑은 고딕", 11), bg=self.colors["card"], fg=self.colors["muted"], pady=40
+            ).pack()
+        else:
+            for idx, (nick, sc, dt) in enumerate(rankings):
+                is_me = (nick == highlight_nick and sc == highlight_score)
+                row_bg = "#283548" if is_me else self.colors["card"]
+                row = tk.Frame(board, bg=row_bg, pady=9)
+                row.pack(fill="x", pady=2)
+
+                rank_fg = self.colors["neon_yellow"] if idx == 0 else "white"
+                tk.Label(row, text=medals[idx], width=6, font=("맑은 고딕", 10, "bold"), bg=row_bg, fg=rank_fg).pack(side=tk.LEFT)
+                tk.Label(row, text=nick, width=14, anchor="w", font=("맑은 고딕", 10, "bold"), bg=row_bg, fg=self.colors["neon_blue"] if is_me else "white").pack(side=tk.LEFT, padx=5)
+                tk.Label(row, text=f"{sc:,}점", width=10, anchor="e", font=("Consolas", 11, "bold"), bg=row_bg, fg=self.colors["neon_green"]).pack(side=tk.LEFT)
+                tk.Label(row, text=dt, width=16, anchor="e", font=("Consolas", 9), bg=row_bg, fg=self.colors["muted"]).pack(side=tk.RIGHT, padx=8)
+
+        tk.Button(
+            self.root, text="🕹️ 지금 바로 도전하기", font=("맑은 고딕", 11, "bold"),
+            bg=self.colors["neon_blue"], fg="#0F172A", relief="flat",
+            width=24, pady=8, cursor="hand2", command=self.start_game_screen
+        ).pack(pady=25)
+
+    # =========================================================================
+    # 8. 행맨 캔버스 드로잉
+    # =========================================================================
     def draw_gallows(self):
         self.canvas.delete("all")
         self.canvas.create_line(45, 168, 140, 168, width=4, fill="#64748B")
@@ -221,16 +621,22 @@ class HangmanV2:
         self.canvas.create_line(180, 18, 180, 40, width=3, fill="#94A3B8")
 
     def draw_hangman_part(self, step):
-        c = "#F43F5E"
-        if step == 1: self.canvas.create_oval(162, 40, 198, 76, width=3, outline=c)
-        elif step == 2: self.canvas.create_line(180, 76, 180, 124, width=3, fill=c)
-        elif step == 3: self.canvas.create_line(180, 90, 155, 114, width=3, fill=c)
-        elif step == 4: self.canvas.create_line(180, 90, 205, 114, width=3, fill=c)
-        elif step == 5: self.canvas.create_line(180, 124, 160, 156, width=3, fill=c)
-        elif step == 6: self.canvas.create_line(180, 124, 200, 156, width=3, fill=c)
+        c = self.colors["neon_red"]
+        if step == 1:
+            self.canvas.create_oval(162, 40, 198, 76, width=3, outline=c)
+        elif step == 2:
+            self.canvas.create_line(180, 76, 180, 124, width=3, fill=c)
+        elif step == 3:
+            self.canvas.create_line(180, 90, 155, 114, width=3, fill=c)
+        elif step == 4:
+            self.canvas.create_line(180, 90, 205, 114, width=3, fill=c)
+        elif step == 5:
+            self.canvas.create_line(180, 124, 160, 156, width=3, fill=c)
+        elif step == 6:
+            self.canvas.create_line(180, 124, 200, 156, width=3, fill=c)
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    HangmanV2(root)
+    game = SoloHangmanGame(root)
     root.mainloop()
