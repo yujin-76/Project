@@ -42,6 +42,8 @@ class SoloHangmanGame:
         self.guessed_letters = set()
         self.wrong_count = 0
         self.max_attempts = 6
+        self.max_lives = 3
+        self.lives = 3
         self.score = 0
         self.combo = 0
         self.is_game_over = True
@@ -173,6 +175,10 @@ class SoloHangmanGame:
             self.answer_entry.delete(0, tk.END)
         self.root.focus_set()
 
+    def get_life_text(self):
+        hearts = "❤️" * self.lives + "🖤" * (self.max_lives - self.lives)
+        return f"LIFE: {hearts}"
+
     # =========================================================================
     # 4. [화면 1] 메인 로비 (닉네임 입력 · 게임 시작 · 랭킹)
     # =========================================================================
@@ -275,6 +281,7 @@ class SoloHangmanGame:
         self.clear_screen()
         self.score = 0
         self.combo = 0
+        self.lives = self.max_lives
         self.is_score_saved = False
 
         nav_bar = tk.Frame(self.root, bg=self.colors["bg"])
@@ -300,6 +307,15 @@ class SoloHangmanGame:
             bg=self.colors["bg"],
             fg=self.colors["neon_blue"],
         ).pack(side=tk.RIGHT)
+
+        self.life_label = tk.Label(
+            nav_bar,
+            text=self.get_life_text(),
+            font=("맑은 고딕", 10, "bold"),
+            bg=self.colors["bg"],
+            fg=self.colors["neon_red"],
+        )
+        self.life_label.pack(side=tk.RIGHT, padx=(0, 14))
 
         board = tk.Frame(self.root, bg=self.colors["card"], padx=15, pady=10)
         board.pack(fill="x", padx=20, pady=5)
@@ -389,14 +405,14 @@ class SoloHangmanGame:
             self.root, text="🔒 단어를 맞히면 다음 스테이지 열림", font=("맑은 고딕", 10, "bold"),
             bg=self.colors["card"], fg=self.colors["muted"],
             disabledforeground="#64748B", relief="flat",
-            width=32, pady=6, state="disabled", command=self.next_round
+            width=34, pady=6, state="disabled", command=self.next_round
         )
         self.action_btn.pack(pady=10)
 
         self.next_round()
 
     def exit_to_menu(self):
-        """플레이 중이거나 스테이지 클리어 후 메인 메뉴로 나갈 때 누적 점수를 저장합니다."""
+        """플레이 중이거나 스테이지 종료 후 메인 메뉴로 나갈 때 누적 점수를 저장합니다."""
         if self.score > 0 and not self.is_score_saved:
             if messagebox.askyesno("기록 저장", f"현재까지 얻은 {self.score}점을 온라인 랭킹에 저장할까요?"):
                 self.save_ranking(self.player_nickname, self.score)
@@ -495,10 +511,10 @@ class SoloHangmanGame:
         self.info_label.config(text=f"❌ {reason} 남은 기회: {remaining}번", fg=self.colors["neon_red"])
 
         if self.wrong_count >= self.max_attempts:
-            self.finish_round(is_win=False, msg="💀 GAME OVER! 도전 실패!")
+            self.finish_round(is_win=False, msg="💔 단어 실패!")
 
     def finish_round(self, is_win, msg):
-        """라운드 종료 시 승리(다음 스테이지) 또는 패배(온라인 DB 랭킹 저장)를 처리합니다."""
+        """라운드 종료 시 승리(다음 스테이지) 또는 목숨 차감/게임오버를 처리합니다."""
         self.is_game_over = True
         self.set_inputs_state("disabled")
 
@@ -514,26 +530,45 @@ class SoloHangmanGame:
                 command=self.next_round,
             )
         else:
-            final_score = self.score
-            self.save_ranking(self.player_nickname, final_score)
-            self.is_score_saved = True
-            self.best_label.config(text=f"TOP 1: {self.get_best_score()}")
-
+            self.lives -= 1
+            self.life_label.config(text=self.get_life_text())
             self.word_label.config(text=" ".join(self.secret_word), fg=self.colors["neon_red"])
-            self.info_label.config(
-                text=f"{msg} (정답: {self.secret_word} | 최종 {final_score}점)",
-                fg=self.colors["neon_red"],
-            )
-            self.action_btn.config(
-                text="🏆 실시간 랭킹 보드에서 내 순위 확인하기",
-                bg=self.colors["neon_yellow"],
-                fg="#0F172A",
-                state="normal",
-                cursor="hand2",
-                command=lambda: self.show_ranking_screen(self.player_nickname, final_score),
-            )
-            self.score = 0
-            self.combo = 0
+
+            if self.lives > 0:
+                # 목숨이 남아있으면 점수를 유지한 채 다음 스테이지 진행 가능
+                self.info_label.config(
+                    text=f"{msg} (정답: {self.secret_word} | 남은 목숨: {self.lives}개)",
+                    fg=self.colors["neon_yellow"],
+                )
+                self.action_btn.config(
+                    text=f"▶ 다음 스테이지 (남은 목숨 {self.lives}개로 계속)",
+                    bg=self.colors["neon_blue"],
+                    fg="#0F172A",
+                    state="normal",
+                    cursor="hand2",
+                    command=self.next_round,
+                )
+            else:
+                # 목숨을 모두 소진한 최종 게임 오버
+                final_score = self.score
+                self.save_ranking(self.player_nickname, final_score)
+                self.is_score_saved = True
+                self.best_label.config(text=f"TOP 1: {self.get_best_score()}")
+
+                self.info_label.config(
+                    text=f"💀 GAME OVER! (정답: {self.secret_word} | 최종 {final_score}점)",
+                    fg=self.colors["neon_red"],
+                )
+                self.action_btn.config(
+                    text="🏆 실시간 랭킹 보드에서 내 순위 확인하기",
+                    bg=self.colors["neon_yellow"],
+                    fg="#0F172A",
+                    state="normal",
+                    cursor="hand2",
+                    command=lambda: self.show_ranking_screen(self.player_nickname, final_score),
+                )
+                self.score = 0
+                self.combo = 0
 
     def update_word_display(self):
         self.word_label.config(
