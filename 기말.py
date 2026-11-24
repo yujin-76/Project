@@ -1,18 +1,21 @@
-import os
 import random
-import sqlite3
 from datetime import datetime
 import tkinter as tk
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox
+import requests
 
 
 class SoloHangmanGame:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("HANGMAN ARCADE - 1인용 랭킹 에디션")
-        self.root.geometry("560x680")
+        self.root.title("HANGMAN ARCADE - 온라인 랭킹 에디션")
+        self.root.geometry("560x660")
         self.root.resizable(False, False)
+
+        # 온라인 연동 주소 설정
+        self.words_url = "https://raw.githubusercontent.com/yujin-76/hangman_txt/refs/heads/main/word.txt"
+        self.firebase_url = "https://hangman-ranking-default-rtdb.firebaseio.com/rankings.json"
 
         # 모던 네온 다크 테마 색상표
         self.colors = {
@@ -28,12 +31,8 @@ class SoloHangmanGame:
         }
         self.root.configure(bg=self.colors["bg"])
 
-        # 1. 외부 단어장(words.txt) 불러오기 & SQLite3 데이터베이스 초기화
-        self.word_file = "words.txt"
+        # 1. GitHub에서 단어장 불러오기
         self.word_pool = self.load_words()
-
-        self.db_name = "hangman_ranking.db"
-        self.init_db()
 
         # 2. 게임 상태 변수
         self.player_nickname = "PLAYER"
@@ -49,7 +48,6 @@ class SoloHangmanGame:
         self.letter_buttons = {}
         self.answer_entry = None
         self.submit_ans_btn = None
-        self.add_word_btn = None
 
         # 4. 전역 키보드 및 마우스 클릭 이벤트 연결
         self.root.bind("<Key>", self.handle_keypress)
@@ -59,92 +57,78 @@ class SoloHangmanGame:
         self.show_menu_screen()
 
     # =========================================================================
-    # 1. 외부 텍스트 파일(words.txt) 단어장 관리
+    # 1. GitHub 온라인 단어장 불러오기
     # =========================================================================
     def load_words(self):
-        """words.txt 파일에서 영단어 목록을 읽어옵니다. 파일이 없으면 기본 단어로 생성합니다."""
+        """GitHub Raw URL에서 최신 영단어 목록을 읽어옵니다."""
         default_words = [
             "PYTHON", "KEYBOARD", "ALGORITHM", "UNIVERSE", "CHAMPION",
             "STRATEGY", "ADVENTURE", "DATABASE", "COMPILER", "SPECTRUM",
             "FUNCTION", "VARIABLE", "NETWORK", "SOFTWARE", "TERMINAL",
         ]
 
-        if not os.path.exists(self.word_file):
-            with open(self.word_file, "w", encoding="utf-8") as f:
-                f.write("\n".join(default_words))
-            return default_words
+        try:
+            response = requests.get(self.words_url, timeout=4)
+            if response.status_code == 200:
+                loaded_words = []
+                for line in response.text.splitlines():
+                    word = line.strip().upper()
+                    if word.isalpha() and len(word) >= 2:
+                        loaded_words.append(word)
+                if loaded_words:
+                    return loaded_words
+        except Exception:
+            pass  # 오프라인이거나 접속 지연 시 기본 단어 사용
 
-        loaded_words = []
-        with open(self.word_file, "r", encoding="utf-8") as f:
-            for line in f:
-                word = line.strip().upper()
-                if word.isalpha() and len(word) >= 2:
-                    loaded_words.append(word)
-
-        return loaded_words if loaded_words else default_words
-
-    def add_new_word_popup(self):
-        """팝업창으로 새 영단어를 입력받아 words.txt 맨 아랫줄에 추가합니다."""
-        new_word = simpledialog.askstring(
-            "단어 추가", "단어장에 추가할 영단어를 입력하세요 (알파벳 2글자 이상):"
-        )
-        if not new_word:
-            return
-
-        clean_word = new_word.strip().upper()
-        if not clean_word.isalpha() or len(clean_word) < 2:
-            messagebox.showwarning("입력 오류", "2글자 이상의 순수 영단어만 추가할 수 있습니다.")
-            return
-
-        if clean_word in self.word_pool:
-            messagebox.showinfo("중복 안내", f"'{clean_word}'는 이미 단어장에 등록되어 있습니다!")
-            return
-
-        self.word_pool.append(clean_word)
-        with open(self.word_file, "a", encoding="utf-8") as f:
-            f.write(f"\n{clean_word}")
-
-        if self.add_word_btn:
-            self.add_word_btn.config(text=f"➕ 새 단어 추가하기 (현재 {len(self.word_pool)}단어)")
-
-        messagebox.showinfo(
-            "추가 완료", f"'{clean_word}' 단어가 추가되었습니다!\n(총 {len(self.word_pool)}개 단어 보유)"
-        )
+        return default_words
 
     # =========================================================================
-    # 2. SQLite3 데이터베이스 관리 (랭킹 저장 및 조회)
+    # 2. Firebase 온라인 랭킹 관리 (저장 및 조회)
     # =========================================================================
-    def init_db(self):
-        """랭킹 데이터를 저장할 SQLite3 테이블을 생성합니다."""
-        with sqlite3.connect(self.db_name) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS rankings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nickname TEXT NOT NULL,
-                    score INTEGER NOT NULL,
-                    played_at TEXT NOT NULL
-                )
-            """)
-
     def save_ranking(self, nickname, score):
-        """0점보다 높은 점수를 얻었을 때 DB에 닉네임과 점수를 기록합니다."""
+        """0점보다 높은 점수를 얻었을 때 Firebase DB에 닉네임과 점수를 기록합니다."""
         if score <= 0:
             return
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-        with sqlite3.connect(self.db_name) as conn:
-            conn.execute(
-                "INSERT INTO rankings (nickname, score, played_at) VALUES (?, ?, ?)",
-                (nickname, score, now_str),
+        payload = {
+            "nickname": nickname,
+            "score": score,
+            "played_at": now_str,
+        }
+        try:
+            requests.post(self.firebase_url, json=payload, timeout=4)
+        except Exception:
+            messagebox.showwarning(
+                "네트워크 오류",
+                "인터넷 연결이 원활하지 않아 온라인 랭킹에 점수를 등록하지 못했습니다."
             )
 
     def get_top_rankings(self, limit=5):
-        """점수가 높은 순으로 상위 N명의 랭킹 목록을 가져옵니다."""
-        with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute(
-                "SELECT nickname, score, played_at FROM rankings ORDER BY score DESC, id ASC LIMIT ?",
-                (limit,),
-            )
-            return cursor.fetchall()
+        """Firebase DB에서 전체 기록을 가져와 점수가 높은 순으로 상위 N명을 반환합니다."""
+        try:
+            response = requests.get(self.firebase_url, timeout=4)
+            if response.status_code == 200:
+                data = response.json()
+                if not data:
+                    return []
+
+                records = []
+                for key, item in data.items():
+                    if isinstance(item, dict) and "score" in item:
+                        records.append((
+                            item.get("nickname", "UNKNOWN"),
+                            int(item.get("score", 0)),
+                            item.get("played_at", ""),
+                            key,
+                        ))
+
+                # 점수 내림차순, 동점일 경우 먼저 등록된 순(key 오름차순) 정렬
+                records.sort(key=lambda x: (-x[1], x[3]))
+                return [(r[0], r[1], r[2]) for r in records[:limit]]
+        except Exception:
+            pass
+
+        return []
 
     def get_best_score(self):
         """역대 1위 점수를 반환합니다."""
@@ -161,7 +145,6 @@ class SoloHangmanGame:
         self.letter_buttons.clear()
         self.answer_entry = None
         self.submit_ans_btn = None
-        self.add_word_btn = None
 
     def handle_global_click(self, event):
         """정답 입력창 바깥 영역을 클릭하면 입력창 포커스를 해제합니다."""
@@ -175,7 +158,7 @@ class SoloHangmanGame:
         self.root.focus_set()
 
     # =========================================================================
-    # 4. [화면 1] 메인 로비 (닉네임 입력 · 게임 시작 · 랭킹 · 단어 추가)
+    # 4. [화면 1] 메인 로비 (닉네임 입력 · 게임 시작 · 랭킹)
     # =========================================================================
     def show_menu_screen(self):
         self.clear_screen()
@@ -187,15 +170,15 @@ class SoloHangmanGame:
             font=("Consolas", 42, "bold"),
             bg=self.colors["bg"],
             fg=self.colors["neon_blue"],
-        ).pack(pady=(55, 5))
+        ).pack(pady=(60, 5))
 
         tk.Label(
             self.root,
-            text="SOLO ARCADE & RANKING EDITION",
+            text="ONLINE ARCADE & RANKING EDITION",
             font=("Consolas", 12, "bold"),
             bg=self.colors["bg"],
             fg=self.colors["muted"],
-        ).pack(pady=(0, 30))
+        ).pack(pady=(0, 35))
 
         # 메인 시작 카드
         card = tk.Frame(self.root, bg=self.colors["card"], padx=25, pady=24)
@@ -251,36 +234,29 @@ class SoloHangmanGame:
         # 명예의 전당 랭킹 버튼
         tk.Button(
             self.root,
-            text=f"🏆 명예의 전당 TOP 5 보기 (현재 1위: {self.get_best_score():,}점)",
+            text=f"🏆 실시간 명예의 전당 TOP 5 (현재 1위: {self.get_best_score():,}점)",
             font=("맑은 고딕", 11, "bold"),
             bg=self.colors["btn_bg"],
             fg=self.colors["neon_yellow"],
             activebackground="#475569",
             relief="flat",
-            width=36,
-            pady=10,
+            width=38,
+            pady=11,
             cursor="hand2",
             command=self.show_ranking_screen,
-        ).pack(pady=(22, 10))
+        ).pack(pady=(24, 10))
 
-        # 단어장 추가 버튼
-        self.add_word_btn = tk.Button(
+        # 등록된 단어 개수 안내 라벨
+        tk.Label(
             self.root,
-            text=f"➕ 새 단어 추가하기 (현재 {len(self.word_pool)}단어)",
-            font=("맑은 고딕", 10, "bold"),
-            bg=self.colors["card"],
-            fg=self.colors["neon_green"],
-            activebackground="#334155",
-            relief="flat",
-            width=36,
-            pady=8,
-            cursor="hand2",
-            command=self.add_new_word_popup,
-        )
-        self.add_word_btn.pack(pady=4)
+            text=f"📚 온라인 단어장 연동 완료 (총 {len(self.word_pool)}개 단어 수록)",
+            font=("맑은 고딕", 9),
+            bg=self.colors["bg"],
+            fg=self.colors["muted"],
+        ).pack(pady=(12, 0))
 
     # =========================================================================
-    # 5. [화면 2] 1인용 게임 플레이 화면
+    # 5. [화면 2] 게임 플레이 화면
     # =========================================================================
     def start_game_screen(self):
         self.clear_screen()
@@ -354,7 +330,7 @@ class SoloHangmanGame:
         )
         self.word_label.pack(pady=4)
 
-        # 정답 직접 입력창 영역 (자유 탈출 지원)
+        # 정답 직접 입력창 영역
         direct_frame = tk.Frame(self.root, bg=self.colors["card"], padx=10, pady=6)
         direct_frame.pack(pady=(2, 8))
 
@@ -413,7 +389,7 @@ class SoloHangmanGame:
     def exit_to_menu(self):
         """플레이 도중 메인 메뉴로 나갈 때 누적 점수를 저장할지 확인합니다."""
         if self.score > 0 and not self.is_game_over:
-            if messagebox.askyesno("기록 저장", f"현재까지 얻은 {self.score}점을 랭킹에 저장할까요?"):
+            if messagebox.askyesno("기록 저장", f"현재까지 얻은 {self.score}점을 온라인 랭킹에 저장할까요?"):
                 self.save_ranking(self.player_nickname, self.score)
         self.show_menu_screen()
 
@@ -503,7 +479,7 @@ class SoloHangmanGame:
             self.finish_round(is_win=False, msg="💀 GAME OVER! 도전 실패!")
 
     def finish_round(self, is_win, msg):
-        """라운드 종료 시 승리(다음 스테이지) 또는 패배(DB 랭킹 저장)를 처리합니다."""
+        """라운드 종료 시 승리(다음 스테이지) 또는 패배(온라인 DB 랭킹 저장)를 처리합니다."""
         self.is_game_over = True
         self.set_inputs_state("disabled")
 
@@ -526,7 +502,7 @@ class SoloHangmanGame:
                 fg=self.colors["neon_red"],
             )
             self.action_btn.config(
-                text="🏆 랭킹 보드에서 내 순위 확인하기",
+                text="🏆 실시간 랭킹 보드에서 내 순위 확인하기",
                 bg=self.colors["neon_yellow"],
                 command=lambda: self.show_ranking_screen(self.player_nickname, final_score),
             )
@@ -548,7 +524,7 @@ class SoloHangmanGame:
             self.submit_ans_btn.config(state=state)
 
     # =========================================================================
-    # 7. [화면 3] 명예의 전당 TOP 5 랭킹 보드
+    # 7. [화면 3] 실시간 명예의 전당 TOP 5 랭킹 보드
     # =========================================================================
     def show_ranking_screen(self, highlight_nick=None, highlight_score=None):
         self.clear_screen()
@@ -569,7 +545,7 @@ class SoloHangmanGame:
         ).pack(pady=(15, 5))
 
         tk.Label(
-            self.root, text="SQLite3 데이터베이스에 저장된 역대 최고 점수 순위입니다.",
+            self.root, text="모든 플레이어와 실시간으로 공유되는 역대 최고 점수 순위입니다.",
             font=("맑은 고딕", 10), bg=self.colors["bg"], fg=self.colors["muted"]
         ).pack(pady=(0, 20))
 
@@ -588,7 +564,7 @@ class SoloHangmanGame:
 
         if not rankings:
             tk.Label(
-                board, text="아직 등록된 기록이 없습니다.\n첫 번째 주인공이 되어보세요!",
+                board, text="아직 등록된 기록이 없거나 네트워크 연결 중입니다.\n첫 번째 주인공이 되어보세요!",
                 font=("맑은 고딕", 11), bg=self.colors["card"], fg=self.colors["muted"], pady=40
             ).pack()
         else:
