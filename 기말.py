@@ -45,6 +45,7 @@ class SoloHangmanGame:
         self.score = 0
         self.combo = 0
         self.is_game_over = True
+        self.is_score_saved = False
 
         # 3. UI 위젯 참조 변수
         self.letter_buttons = {}
@@ -80,7 +81,7 @@ class SoloHangmanGame:
                 if loaded_words:
                     return loaded_words
         except Exception:
-            pass  # 오프라인이거나 접속 지연 시 기본 단어 사용
+            pass
 
         return default_words
 
@@ -92,7 +93,6 @@ class SoloHangmanGame:
         if score <= 0:
             return
 
-        # Firebase 경로에 사용할 수 없는 특수문자(. # $ [ ] /) 치환
         safe_key = re.sub(r'[.#$\[\]/]', '_', nickname).strip()
         if not safe_key:
             return
@@ -101,19 +101,22 @@ class SoloHangmanGame:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         payload = {
             "nickname": nickname,
-            "score": score,
+            "score": int(score),
             "played_at": now_str,
         }
 
         try:
-            # 1. 해당 닉네임의 기존 기록 조회
-            res = requests.get(user_url, timeout=4)
+            res = requests.get(user_url, timeout=5)
             old_data = res.json() if res.status_code == 200 else None
             old_score = int(old_data.get("score", 0)) if isinstance(old_data, dict) else 0
 
-            # 2. 기존 최고 점수보다 높을 때만 덮어쓰기 (PUT)
             if score > old_score:
-                requests.put(user_url, json=payload, timeout=4)
+                put_res = requests.put(user_url, json=payload, timeout=5)
+                if put_res.status_code != 200:
+                    messagebox.showwarning(
+                        "랭킹 저장 실패",
+                        f"서버 응답 오류로 점수를 갱신하지 못했습니다. (코드: {put_res.status_code})"
+                    )
         except Exception:
             messagebox.showwarning(
                 "네트워크 오류",
@@ -123,7 +126,7 @@ class SoloHangmanGame:
     def get_top_rankings(self, limit=5):
         """Firebase DB에서 전체 기록을 가져와 점수가 높은 순으로 상위 N명을 반환합니다."""
         try:
-            response = requests.get(self.firebase_url, timeout=4)
+            response = requests.get(self.firebase_url, timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 if not data:
@@ -139,7 +142,6 @@ class SoloHangmanGame:
                             key,
                         ))
 
-                # 점수 내림차순, 동점일 경우 닉네임 오름차순 정렬
                 records.sort(key=lambda x: (-x[1], x[3]))
                 return [(r[0], r[1], r[2]) for r in records[:limit]]
         except Exception:
@@ -156,7 +158,6 @@ class SoloHangmanGame:
     # 3. 공통 화면 제어 및 입력창 포커스 관리
     # =========================================================================
     def clear_screen(self):
-        """화면 전환을 위해 현재 창의 모든 위젯을 비웁니다."""
         for widget in self.root.winfo_children():
             widget.destroy()
         self.letter_buttons.clear()
@@ -164,12 +165,10 @@ class SoloHangmanGame:
         self.submit_ans_btn = None
 
     def handle_global_click(self, event):
-        """정답 입력창 바깥 영역을 클릭하면 입력창 포커스를 해제합니다."""
         if not isinstance(event.widget, tk.Entry):
             self.root.focus_set()
 
     def release_entry_focus(self, event=None):
-        """Esc 또는 [취소] 버튼 클릭 시 입력창을 비우고 빠져나옵니다."""
         if self.answer_entry:
             self.answer_entry.delete(0, tk.END)
         self.root.focus_set()
@@ -197,7 +196,6 @@ class SoloHangmanGame:
             fg=self.colors["muted"],
         ).pack(pady=(0, 35))
 
-        # 메인 시작 카드
         card = tk.Frame(self.root, bg=self.colors["card"], padx=25, pady=24)
         card.pack(fill="x", padx=55)
 
@@ -248,7 +246,6 @@ class SoloHangmanGame:
 
         nick_entry.bind("<Return>", lambda e: on_start())
 
-        # 명예의 전당 랭킹 버튼
         tk.Button(
             self.root,
             text=f"🏆 실시간 명예의 전당 TOP 5 (현재 1위: {self.get_best_score():,}점)",
@@ -263,7 +260,6 @@ class SoloHangmanGame:
             command=self.show_ranking_screen,
         ).pack(pady=(24, 10))
 
-        # 등록된 단어 개수 안내 라벨
         tk.Label(
             self.root,
             text=f"📚 온라인 단어장 연동 완료 (총 {len(self.word_pool)}개 단어 수록)",
@@ -279,8 +275,8 @@ class SoloHangmanGame:
         self.clear_screen()
         self.score = 0
         self.combo = 0
+        self.is_score_saved = False
 
-        # 상단 내비게이션 바
         nav_bar = tk.Frame(self.root, bg=self.colors["bg"])
         nav_bar.pack(fill="x", padx=20, pady=(12, 5))
 
@@ -305,7 +301,6 @@ class SoloHangmanGame:
             fg=self.colors["neon_blue"],
         ).pack(side=tk.RIGHT)
 
-        # 점수 / 콤보 / 최고기록 전광판
         board = tk.Frame(self.root, bg=self.colors["card"], padx=15, pady=10)
         board.pack(fill="x", padx=20, pady=5)
 
@@ -327,7 +322,6 @@ class SoloHangmanGame:
         )
         self.best_label.pack(side=tk.RIGHT)
 
-        # 안내 메시지 및 행맨 캔버스
         self.info_label = tk.Label(
             self.root, text="", font=("맑은 고딕", 11, "bold"),
             bg=self.colors["bg"], fg="white"
@@ -340,14 +334,12 @@ class SoloHangmanGame:
         )
         self.canvas.pack(pady=6)
 
-        # 단어 빈칸 라벨
         self.word_label = tk.Label(
             self.root, text="", font=("Consolas", 26, "bold"),
             bg=self.colors["bg"], fg="white"
         )
         self.word_label.pack(pady=4)
 
-        # 정답 직접 입력창 영역
         direct_frame = tk.Frame(self.root, bg=self.colors["card"], padx=10, pady=6)
         direct_frame.pack(pady=(2, 8))
 
@@ -377,7 +369,6 @@ class SoloHangmanGame:
             padx=6, pady=2, cursor="hand2", command=self.release_entry_focus
         ).pack(side=tk.LEFT)
 
-        # 알파벳 A~Z 버튼 키보드
         keyboard_frame = tk.Frame(self.root, bg=self.colors["bg"])
         keyboard_frame.pack(pady=6)
 
@@ -393,21 +384,23 @@ class SoloHangmanGame:
             btn.grid(row=idx // 9, column=idx % 9, padx=3, pady=3)
             self.letter_buttons[letter] = btn
 
-        # 하단 진행 버튼
+        # 하단 진행 버튼 (라운드 진행 중에는 비활성화)
         self.action_btn = tk.Button(
-            self.root, text="▶ 다음 스테이지", font=("맑은 고딕", 10, "bold"),
-            bg=self.colors["neon_blue"], fg="#0F172A", relief="flat",
-            width=28, pady=6, cursor="hand2", command=self.next_round
+            self.root, text="🔒 단어를 맞히면 다음 스테이지 열림", font=("맑은 고딕", 10, "bold"),
+            bg=self.colors["card"], fg=self.colors["muted"],
+            disabledforeground="#64748B", relief="flat",
+            width=32, pady=6, state="disabled", command=self.next_round
         )
         self.action_btn.pack(pady=10)
 
         self.next_round()
 
     def exit_to_menu(self):
-        """플레이 도중 메인 메뉴로 나갈 때 누적 점수를 저장할지 확인합니다."""
-        if self.score > 0 and not self.is_game_over:
+        """플레이 중이거나 스테이지 클리어 후 메인 메뉴로 나갈 때 누적 점수를 저장합니다."""
+        if self.score > 0 and not self.is_score_saved:
             if messagebox.askyesno("기록 저장", f"현재까지 얻은 {self.score}점을 온라인 랭킹에 저장할까요?"):
                 self.save_ranking(self.player_nickname, self.score)
+                self.is_score_saved = True
         self.show_menu_screen()
 
     def next_round(self):
@@ -416,6 +409,7 @@ class SoloHangmanGame:
         self.guessed_letters.clear()
         self.wrong_count = 0
         self.is_game_over = False
+        self.is_score_saved = False
 
         self.info_label.config(
             text=f"숨겨진 영단어를 추리하세요! (총 {len(self.secret_word)}글자 | 남은 기회: 6번)",
@@ -425,6 +419,14 @@ class SoloHangmanGame:
         self.draw_gallows()
         self.update_word_display()
         self.set_inputs_state("normal")
+
+        # 문제 풀이 중 스킵 방지: 하단 버튼 잠금
+        self.action_btn.config(
+            text="🔒 단어를 맞히면 다음 스테이지 열림",
+            bg=self.colors["card"],
+            state="disabled",
+            cursor="arrow",
+        )
         self.root.focus_set()
 
     # =========================================================================
@@ -506,11 +508,15 @@ class SoloHangmanGame:
             self.action_btn.config(
                 text="▶ 다음 스테이지 (점수 이어하기)",
                 bg=self.colors["neon_green"],
+                fg="#0F172A",
+                state="normal",
+                cursor="hand2",
                 command=self.next_round,
             )
         else:
             final_score = self.score
             self.save_ranking(self.player_nickname, final_score)
+            self.is_score_saved = True
             self.best_label.config(text=f"TOP 1: {self.get_best_score()}")
 
             self.word_label.config(text=" ".join(self.secret_word), fg=self.colors["neon_red"])
@@ -521,6 +527,9 @@ class SoloHangmanGame:
             self.action_btn.config(
                 text="🏆 실시간 랭킹 보드에서 내 순위 확인하기",
                 bg=self.colors["neon_yellow"],
+                fg="#0F172A",
+                state="normal",
+                cursor="hand2",
                 command=lambda: self.show_ranking_screen(self.player_nickname, final_score),
             )
             self.score = 0
